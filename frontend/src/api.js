@@ -1,5 +1,47 @@
 const API_BASE = window.location.origin;
 
+/* ── Auth API ────────────────────────────────────────── */
+
+function getToken() {
+  return localStorage.getItem("chatllm_token");
+}
+
+function getEmail() {
+  return localStorage.getItem("chatllm_email");
+}
+
+function saveAuth(token, email) {
+  localStorage.setItem("chatllm_token", token);
+  localStorage.setItem("chatllm_email", email);
+}
+
+function clearAuth() {
+  localStorage.removeItem("chatllm_token");
+  localStorage.removeItem("chatllm_email");
+}
+
+function authHeaders() {
+  const token = getToken();
+  return token ? { "Authorization": `Bearer ${token}` } : {};
+}
+
+async function fetchMe() {
+  const res = await fetch(`${API_BASE}/api/auth/me`, {
+    headers: { ...authHeaders() },
+  });
+  if (!res.ok) return null;
+  return res.json();
+}
+
+async function apiLogout() {
+  const res = await fetch(`${API_BASE}/api/auth/logout`, {
+    method: "POST",
+    headers: { ...authHeaders() },
+  });
+  if (!res.ok) throw new Error("Falha ao fazer logout");
+  clearAuth();
+}
+
 /* ── Session API ─────────────────────────────────────── */
 
 async function fetchSessions() {

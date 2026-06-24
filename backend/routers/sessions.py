@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from backend.database import get_db
-from backend.models import Session as SessionModel
+from backend.models import ChatSession as SessionModel
 from backend.schemas.session import SessionCreate, SessionList, SessionOut, TitleSuggestion
 from backend.services.openrouter import generate_reply, OpenRouterConfigError
 

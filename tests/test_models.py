@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from backend.models import ChatMessage, Session
+from backend.models import ChatMessage, ChatSession as Session
 
 
 class TestSession:

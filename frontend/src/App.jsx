@@ -11,6 +11,8 @@ const WELCOME_MESSAGE = {
 };
 
 function App() {
+  const [user, setUser] = useState(null); // { token, email } | null
+  const [checkingAuth, setCheckingAuth] = useState(true);
   const [sessions, setSessions] = useState([]);
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [messages, setMessages] = useState([WELCOME_MESSAGE]);
@@ -25,8 +27,28 @@ function App() {
     [messages]
   );
 
-  /* ── Load sessions on mount ─────────────────────── */
+  /* ── Check existing auth on mount ───────────────── */
   useEffect(() => {
+    const token = getToken();
+    if (!token) {
+      setCheckingAuth(false);
+      return;
+    }
+    fetchMe()
+      .then((data) => {
+        if (data) {
+          setUser({ token, email: data.email });
+        } else {
+          clearAuth();
+        }
+      })
+      .catch(() => clearAuth())
+      .finally(() => setCheckingAuth(false));
+  }, []);
+
+  /* ── Load sessions when user is set ─────────────── */
+  useEffect(() => {
+    if (!user) return;
     fetchSessions()
       .then((sess) => {
         setSessions(sess);
@@ -35,7 +57,7 @@ function App() {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [user]);
 
   useEffect(() => {
     const el = messagesRef.current;
@@ -46,6 +68,24 @@ function App() {
     return () => {
       abortControllerRef.current?.abort();
     };
+  }, []);
+
+  /* ── Login handler ──────────────────────────────── */
+  const handleLogin = useCallback((token, email) => {
+    saveAuth(token, email);
+    setUser({ token, email });
+  }, []);
+
+  /* ── Logout handler ─────────────────────────────── */
+  const handleLogout = useCallback(async () => {
+    try {
+      await apiLogout();
+    } catch {}
+    clearAuth();
+    setUser(null);
+    setSessions([]);
+    setActiveSessionId(null);
+    setMessages([WELCOME_MESSAGE]);
   }, []);
 
   /* ── Load a session's history ───────────────────── */
@@ -119,7 +159,7 @@ function App() {
     async (sessionId) => {
       if (!sessionId) return;
       const session = sessions.find((s) => s.id === sessionId);
-      if (session && session.title) return; // already has a title
+      if (session && session.title) return;
 
       try {
         const title = await suggestTitle(sessionId);
@@ -128,9 +168,7 @@ function App() {
             prev.map((s) => (s.id === sessionId ? { ...s, title } : s))
           );
         }
-      } catch {
-        // Silently ignore title suggestion failures
-      }
+      } catch {}
     },
     [sessions]
   );
@@ -148,7 +186,6 @@ function App() {
     const cleaned = text.trim();
     if (!cleaned || busy) return;
 
-    // Auto-create session if none active
     let sessionId = activeSessionId;
     if (!sessionId) {
       try {
@@ -209,12 +246,10 @@ function App() {
         )
       );
 
-      // Suggest title after first exchange
       if (isFirstUserMessage && sessionId) {
         trySuggestTitle(sessionId);
       }
 
-      // Refresh session list to get updated timestamps
       refreshSessions();
     } catch (err) {
       const aborted = err?.name === "AbortError";
@@ -242,6 +277,19 @@ function App() {
     }
   };
 
+  /* ── Loading / Login / Chat UI ──────────────────── */
+  if (checkingAuth) {
+    return (
+      <div className="login-container" style={{ alignItems: "center", justifyContent: "center" }}>
+        <p style={{ color: "var(--muted)" }}>Verificando autenticacao...</p>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <Login onLogin={handleLogin} />;
+  }
+
   return (
     <div className="app-layout">
       <Sidebar
@@ -254,6 +302,18 @@ function App() {
       <main className="app-shell">
         <header className="app-header">
           <div className="brand">ChatLLM Lab</div>
+          <div className="header-right">
+            <span className="header-email" title={user.email}>
+              {user.email}
+            </span>
+            <button className="header-logout-btn" onClick={handleLogout} aria-label="Sair">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <polyline points="16 17 21 12 16 7" />
+                <line x1="21" y1="12" x2="9" y2="12" />
+              </svg>
+            </button>
+          </div>
         </header>
 
         <section className="messages" aria-live="polite" ref={messagesRef}>
