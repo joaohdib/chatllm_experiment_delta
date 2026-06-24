@@ -1,17 +1,19 @@
-const { useEffect, useMemo, useRef, useState } = React;
+const { useEffect, useMemo, useRef, useState, useCallback } = React;
 
 function createMessageId() {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+const WELCOME_MESSAGE = {
+  id: createMessageId(),
+  role: "assistant",
+  content: "Bem-vindo ao ChatLLM Lab. Como posso ajudar voce hoje?",
+};
+
 function App() {
-  const [messages, setMessages] = useState([
-    {
-      id: createMessageId(),
-      role: "assistant",
-      content: "Bem-vindo ao ChatLLM Lab. Como posso ajudar voce hoje?",
-    },
-  ]);
+  const [sessions, setSessions] = useState([]);
+  const [activeSessionId, setActiveSessionId] = useState(null);
+  const [messages, setMessages] = useState([WELCOME_MESSAGE]);
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -22,6 +24,18 @@ function App() {
     () => messages.filter((msg) => msg.role === "user" || msg.role === "assistant"),
     [messages]
   );
+
+  /* ── Load sessions on mount ─────────────────────── */
+  useEffect(() => {
+    fetchSessions()
+      .then((sess) => {
+        setSessions(sess);
+        if (sess.length > 0) {
+          loadSession(sess[0].id, false);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const el = messagesRef.current;
@@ -34,16 +48,119 @@ function App() {
     };
   }, []);
 
+  /* ── Load a session's history ───────────────────── */
+  const loadSession = useCallback(async (sessionId, fetchHistory = true) => {
+    setActiveSessionId(sessionId);
+    if (fetchHistory) {
+      try {
+        const history = await fetchSessionHistory(sessionId);
+        if (history.length === 0) {
+          setMessages([WELCOME_MESSAGE]);
+        } else {
+          setMessages(
+            history.map((m) => ({
+              id: createMessageId(),
+              role: m.role,
+              content: m.content,
+            }))
+          );
+        }
+      } catch {
+        setMessages([WELCOME_MESSAGE]);
+      }
+    }
+  }, []);
+
+  /* ── Reload session list ────────────────────────── */
+  const refreshSessions = useCallback(async () => {
+    try {
+      const sess = await fetchSessions();
+      setSessions(sess);
+    } catch {}
+  }, []);
+
+  /* ── Create new session ─────────────────────────── */
+  const handleCreateSession = useCallback(async () => {
+    try {
+      const sess = await createSession();
+      setSessions((prev) => [sess, ...prev]);
+      setMessages([WELCOME_MESSAGE]);
+      setError("");
+      setActiveSessionId(sess.id);
+    } catch (err) {
+      setError(err.message);
+    }
+  }, []);
+
+  /* ── Delete session ─────────────────────────────── */
+  const handleDeleteSession = useCallback(
+    async (sessionId) => {
+      try {
+        await deleteSession(sessionId);
+        const updated = sessions.filter((s) => s.id !== sessionId);
+        setSessions(updated);
+        if (activeSessionId === sessionId) {
+          if (updated.length > 0) {
+            loadSession(updated[0].id, true);
+          } else {
+            setActiveSessionId(null);
+            setMessages([WELCOME_MESSAGE]);
+          }
+        }
+      } catch (err) {
+        setError(err.message);
+      }
+    },
+    [sessions, activeSessionId, loadSession]
+  );
+
+  /* ── Suggest title after first exchange ──────────── */
+  const trySuggestTitle = useCallback(
+    async (sessionId) => {
+      if (!sessionId) return;
+      const session = sessions.find((s) => s.id === sessionId);
+      if (session && session.title) return; // already has a title
+
+      try {
+        const title = await suggestTitle(sessionId);
+        if (title) {
+          setSessions((prev) =>
+            prev.map((s) => (s.id === sessionId ? { ...s, title } : s))
+          );
+        }
+      } catch {
+        // Silently ignore title suggestion failures
+      }
+    },
+    [sessions]
+  );
+
+  /* ── Stop streaming ─────────────────────────────── */
   const onStop = () => {
     abortControllerRef.current?.abort();
     abortControllerRef.current = null;
     setBusy(false);
   };
 
+  /* ── Submit message ─────────────────────────────── */
   const onSubmit = async (event, inputRef) => {
     event.preventDefault();
     const cleaned = text.trim();
     if (!cleaned || busy) return;
+
+    // Auto-create session if none active
+    let sessionId = activeSessionId;
+    if (!sessionId) {
+      try {
+        const sess = await createSession();
+        setSessions((prev) => [sess, ...prev]);
+        setActiveSessionId(sess.id);
+        sessionId = sess.id;
+      } catch (err) {
+        setError(err.message);
+        return;
+      }
+    }
 
     setError("");
     const userMessage = { id: createMessageId(), role: "user", content: cleaned };
@@ -59,11 +176,20 @@ function App() {
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
+    const isFirstUserMessage = chatHistory.filter((m) => m.role === "user").length === 0;
+
     try {
       await sendMessageStream({
         message: cleaned,
+        sessionId,
         history: chatHistory,
         signal: abortController.signal,
+        onSessionId: (sid) => {
+          if (!activeSessionId) {
+            setActiveSessionId(sid);
+            sessionId = sid;
+          }
+        },
         onDelta: (delta) => {
           setMessages((prev) =>
             prev.map((msg) =>
@@ -82,6 +208,14 @@ function App() {
             : msg
         )
       );
+
+      // Suggest title after first exchange
+      if (isFirstUserMessage && sessionId) {
+        trySuggestTitle(sessionId);
+      }
+
+      // Refresh session list to get updated timestamps
+      refreshSessions();
     } catch (err) {
       const aborted = err?.name === "AbortError";
       if (!aborted) {
@@ -109,32 +243,41 @@ function App() {
   };
 
   return (
-    <main className="app-shell">
-      <header className="app-header">
-        <div className="brand">ChatLLM Lab</div>
-      </header>
-
-      <section className="messages" aria-live="polite" ref={messagesRef}>
-        <div className="messages-inner">
-          {messages.map((msg) => (
-            <article key={msg.id} className={`bubble ${msg.role}`}>
-              <MessageContent content={msg.content} />
-            </article>
-          ))}
-        </div>
-      </section>
-
-      <Composer
-        text={text}
-        busy={busy}
-        error={error}
-        onChangeText={setText}
-        onSubmit={onSubmit}
-        onStop={onStop}
+    <div className="app-layout">
+      <Sidebar
+        sessions={sessions}
+        activeSessionId={activeSessionId}
+        onSelectSession={(id) => loadSession(id, true)}
+        onCreateSession={handleCreateSession}
+        onDeleteSession={handleDeleteSession}
       />
+      <main className="app-shell">
+        <header className="app-header">
+          <div className="brand">ChatLLM Lab</div>
+        </header>
 
-      <div className="warning-banner">Lembre-se, você precisa focar no experimento!!!</div>
-    </main>
+        <section className="messages" aria-live="polite" ref={messagesRef}>
+          <div className="messages-inner">
+            {messages.map((msg) => (
+              <article key={msg.id} className={`bubble ${msg.role}`}>
+                <MessageContent content={msg.content} />
+              </article>
+            ))}
+          </div>
+        </section>
+
+        <Composer
+          text={text}
+          busy={busy}
+          error={error}
+          onChangeText={setText}
+          onSubmit={onSubmit}
+          onStop={onStop}
+        />
+
+        <div className="warning-banner">Lembre-se, voce precisa focar no experimento!!!</div>
+      </main>
+    </div>
   );
 }
 
